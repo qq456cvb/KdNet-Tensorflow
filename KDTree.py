@@ -31,7 +31,8 @@ def KDTree(points, depth=11, rnd_split=True, gamma=10.):
         split_axis[crt_depth].append(ax)
 
     split(np.arange(points.shape[0]), 0)
-    return order, list(reversed(split_axis))
+    split_axis = [np.asarray(arr) for arr in split_axis]
+    return np.asarray(order), list(reversed(split_axis))
 
 
 if __name__ == '__main__':

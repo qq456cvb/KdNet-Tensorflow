@@ -4,13 +4,17 @@
 import tensorflow as tf
 
 from tensorpack import *
-from tensorpack.dataflow import dataset
+from tensorpack.dataflow import *
 from tensorpack.tfutils import get_current_tower_context, summary
+from dataset import  MyDataflow
+import multiprocessing
 
 # Monkey-patch tf.layers to support argscope.
 enable_argscope_for_module(tf.layers)
 
 DEPTH = 11
+N_CLASSES = 40
+DIM = 3
 
 
 class Model(ModelDesc):
@@ -18,34 +22,34 @@ class Model(ModelDesc):
         """
         Define all the inputs (with type, shape, name) that the graph will need.
         """
-        return [tf.placeholder((None, None, 3), tf.float32, 'input'),
-                tf.placeholder((None, None, None), tf.int32, 'idx'),
-                *[tf.placeholder((None, None), tf.int32, 'idx') for _ in range(DEPTH)]]
+        return [tf.placeholder(tf.float32, (None, None, DIM), 'input'),
+                tf.placeholder(tf.int32, (None, None, None), 'idx'),
+                tf.placeholder(tf.int32, (None,), 'label'),
+                *[tf.placeholder(tf.int32, (None, None), 'split_axis%d' % i) for i in range(DEPTH)]]
 
-    def build_graph(self, image, label):
+    def build_graph(self, points, idx, label, *split_axis):
         """This function should build the model which takes the input variables
         and return cost at the end"""
 
-        # In tensorflow, inputs to convolution function are assumed to be
-        # NHWC. Add a single channel here.
-        image = tf.expand_dims(image, 3)
+        # add all features in the leaf node
+        batch_idx = tf.expand_dims(tf.tile(tf.reshape(tf.range(tf.shape(points)[0]), (-1, 1, 1)), [1, tf.shape(idx)[1], tf.shape(idx)[2]]), -1)
+        points = tf.gather_nd(points, tf.concat([batch_idx, tf.expand_dims(idx, -1)], -1))
+        points = tf.transpose(tf.reduce_mean(points, -2), (0, 2, 1))  # B * N * 3
+        x = tf.transpose(tf.nn.conv1d(points, tf.get_variable('kernel_pre', [1, DIM, 32]), 1, 'SAME', data_format='NCHW'), (0, 2, 1))
 
-        image = image * 2 - 1   # center the pixels values at zero
+        features = [32, 32, 64, 64, 128, 128, 256, 256, 512, 512, 128, N_CLASSES]
+        Ws = [tf.get_variable('kernel%d' % i, shape=(DIM, 2 * features[i], features[i + 1])) for i in range(DEPTH)]
+        Bs = [tf.get_variable('bias%d' % i, shape=(DIM, features[i + 1])) for i in range(DEPTH)]
+        for i in range(DEPTH):
+            x = tf.expand_dims(tf.reshape(x, [tf.shape(x)[0], tf.div(tf.shape(x)[1], 2), 2 * features[i]]), 2)  # B * N/2 * 1 * 2F
+            w = tf.gather_nd(Ws[i], tf.expand_dims(split_axis[i], -1))  # B * N/2 * 2F * F_next
+            # x = tf.Print(x, [tf.shape(x), tf.shape(w)], summarize=100)
+            b = tf.gather_nd(Bs[i], tf.expand_dims(split_axis[i], -1))  # B * N/2 * F_next
+            x = tf.squeeze(tf.matmul(x, w), -2) + b
+            if i < DEPTH - 1:
+                x = tf.nn.relu(x)
 
-        # The context manager `argscope` sets the default option for all the layers under
-        # this context. Here we use 32 channel convolution with shape 3x3
-        with argscope([tf.layers.conv2d], padding='same', activation=tf.nn.relu):
-            l = tf.layers.conv2d(image, 32, 3, name='conv0')
-            l = tf.layers.max_pooling2d(l, 2, 2, padding='valid')
-            l = tf.layers.conv2d(l, 32, 3, name='conv1')
-            l = tf.layers.conv2d(l, 32, 3, name='conv2')
-            l = tf.layers.max_pooling2d(l, 2, 2, padding='valid')
-            l = tf.layers.conv2d(l, 32, 3, name='conv3')
-            l = tf.layers.flatten(l)
-            l = tf.layers.dense(l, 512, activation=tf.nn.relu, name='fc0')
-            l = tf.layers.dropout(l, rate=0.5,
-                                  training=get_current_tower_context().is_training)
-        logits = tf.layers.dense(l, 10, activation=tf.identity, name='fc1')
+        logits = tf.squeeze(x, 1)
 
         # a vector of length B with loss of each sample
         cost = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=label)
@@ -64,32 +68,33 @@ class Model(ModelDesc):
         # Use a regex to find parameters to apply weight decay.
         # Here we apply a weight decay on all W (weight matrix) of all fc layers
         # If you don't like regex, you can certainly define the cost in any other methods.
-        wd_cost = tf.multiply(1e-3,
-                              regularize_cost('fc.*/kernel', tf.nn.l2_loss),
+        wd_cost = tf.multiply(1e-5,
+                              regularize_cost('kernel.*', tf.nn.l2_loss),
                               name='regularize_loss')
         total_cost = tf.add_n([wd_cost, cost], name='total_cost')
         summary.add_moving_summary(cost, wd_cost, total_cost)
 
         # monitor histogram of all weight (of conv and fc layers) in tensorboard
-        summary.add_param_summary(('.*/kernel', ['histogram', 'rms']))
+        summary.add_param_summary(('kernel.*', ['histogram', 'rms']))
         # the function should return the total cost to be optimized
         return total_cost
 
     def optimizer(self):
-        lr = tf.train.exponential_decay(
-            learning_rate=1e-3,
-            global_step=get_global_step_var(),
-            decay_steps=468 * 10,
-            decay_rate=0.3, staircase=True, name='learning_rate')
+        lr = 1e-3
+        # lr = tf.train.exponential_decay(
+        #     learning_rate=1e-3,
+        #     global_step=get_global_step_var(),
+        #     decay_steps=468 * 10,
+        #     decay_rate=0.3, staircase=True, name='learning_rate')
         # This will also put the summary in tensorboard, stat.json and print in terminal
         # but this time without moving average
         tf.summary.scalar('lr', lr)
-        return tf.train.AdamOptimizer(lr)
+        return tf.train.MomentumOptimizer(lr, 0.9)
 
 
 def get_data():
-    train = BatchData(dataset.Mnist('train'), 128)
-    test = BatchData(dataset.Mnist('test'), 256, remainder=True)
+    train = PrefetchData(BatchData(MyDataflow('./modelnet40_ply_hdf5_2048/train_files.txt', False, True), 32), multiprocessing.cpu_count() // 2, multiprocessing.cpu_count() // 2)
+    test = PrefetchData(BatchData(MyDataflow('./modelnet40_ply_hdf5_2048/test_files.txt', False, False), 32, remainder=True), multiprocessing.cpu_count() // 2, multiprocessing.cpu_count() // 2)
     return train, test
 
 
