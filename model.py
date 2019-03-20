@@ -89,8 +89,8 @@ class Model(ModelDesc):
         #     decay_rate=0.3, staircase=True, name='learning_rate')
         # This will also put the summary in tensorboard, stat.json and print in terminal
         # but this time without moving average
-        tf.summary.scalar('lr', lr)
-        return tf.train.MomentumOptimizer(lr, 0.9)
+        # tf.summary.scalar('lr', lr)
+        return tf.train.AdamOptimizer(lr)
 
 
 def get_data():
@@ -123,6 +123,6 @@ if __name__ == '__main__':
                 ScalarStats(['cross_entropy_loss', 'accuracy'])),
         ],
         steps_per_epoch=steps_per_epoch,
-        max_epoch=100,
+        max_epoch=300,
     )
     launch_train_with_config(config, SimpleTrainer())
