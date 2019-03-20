@@ -36,6 +36,7 @@ class Model(ModelDesc):
         points = tf.gather_nd(points, tf.concat([batch_idx, tf.expand_dims(idx, -1)], -1))
         points = tf.transpose(tf.reduce_mean(points, -2), (0, 2, 1))  # B * N * 3
         x = tf.transpose(tf.nn.conv1d(points, tf.get_variable('kernel_pre', [1, DIM, 32]), 1, 'SAME', data_format='NCHW'), (0, 2, 1))
+        x = tf.nn.bias_add(x, tf.get_variable('bias_pre', (32,)))
 
         features = [32, 32, 64, 64, 128, 128, 256, 256, 512, 512, 128, N_CLASSES]
         Ws = [tf.get_variable('kernel%d' % i, shape=(DIM, 2 * features[i], features[i + 1])) for i in range(DEPTH)]
@@ -68,7 +69,7 @@ class Model(ModelDesc):
         # Use a regex to find parameters to apply weight decay.
         # Here we apply a weight decay on all W (weight matrix) of all fc layers
         # If you don't like regex, you can certainly define the cost in any other methods.
-        wd_cost = tf.multiply(1e-5,
+        wd_cost = tf.multiply(1e-3,
                               regularize_cost('kernel.*', tf.nn.l2_loss),
                               name='regularize_loss')
         total_cost = tf.add_n([wd_cost, cost], name='total_cost')
