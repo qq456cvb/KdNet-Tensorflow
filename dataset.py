@@ -74,9 +74,9 @@ class MyDataflow(RNGDataFlow):
             label = self.label[idx]
             if self.augment:
                 rot = rnd_rot()
-                np.einsum('ij,nj->ni', rot, points)
+                points = np.einsum('ij,nj->ni', rot, points)
                 points += np.random.rand(3)[None, :] * 0.05
-                np.einsum('ij,nj->ni', rot.T, points)
+                points = np.einsum('ij,nj->ni', rot.T, points)
 
             rand_rot = rnd_rot() if self.rnd_rot else np.eye(3)
             points = points @ rand_rot
