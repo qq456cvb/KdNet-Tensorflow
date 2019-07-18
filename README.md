@@ -6,3 +6,6 @@ Put modelnet40_ply_hdf5_2048 from PointNet/++ to the root, and run model.py
 
 # Reference
 https://arxiv.org/abs/1704.01222
+
+# Results
+One run gives me 92.6% accuracy
